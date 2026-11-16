@@ -1,0 +1,29 @@
+assets/NotoSans-OFL.txt
+  s_a9870ed8529462::t_3de4cd5be3ce48 1-93
+src/main.rs
+  s_d0c854193ae65c::t_4ad7b579c1d2de 13,74-89,92-93,102,108
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "a769b6754e9bf72c2e630531c3e9b8f6bc373914",
+  "prompts": {},
+  "sessions": {
+    "s_a9870ed8529462": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a1e49f-42cd-7278-83b3-737524fc549e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ben Wyrosdick <ben.wyrosdick@gmail.com>"
+    },
+    "s_d0c854193ae65c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "6ec48024-65c9-4299-8ca1-289ccbb1d695",
+        "model": "unknown"
+      },
+      "human_author": "Ben Wyrosdick <ben.wyrosdick@gmail.com>"
+    }
+  }
+}
