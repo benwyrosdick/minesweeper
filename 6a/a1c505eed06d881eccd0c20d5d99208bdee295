@@ -1,0 +1,19 @@
+src/main.rs
+  s_a9870ed8529462::t_0488edb3ee056c 328-332,341-343,357,371-373
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "6aa1c505eed06d881eccd0c20d5d99208bdee295",
+  "prompts": {},
+  "sessions": {
+    "s_a9870ed8529462": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a1e49f-42cd-7278-83b3-737524fc549e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ben Wyrosdick <ben.wyrosdick@gmail.com>"
+    }
+  }
+}
