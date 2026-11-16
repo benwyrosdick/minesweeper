@@ -325,6 +325,11 @@ struct App {
 /// miniquad also sizes the whole window frame, so the content ends up short by the
 /// title-bar height. Once the size settles we measure that error, re-request, and remember
 /// the offset so later mode switches land in one step.
+///
+/// A large error isn't the title bar, it's the window manager imposing a size (e.g. an
+/// Omarchy floating workspace opens every window at up to 1100x760). Folding that into
+/// the offset would drive the request to zero, which X rejects with BadValue, so we just
+/// ask for the board's size again instead.
 struct WindowFit {
     desired: Vec2,
     offset: Vec2,
@@ -332,6 +337,9 @@ struct WindowFit {
     stable_frames: u32,
     fixes: u32,
 }
+
+/// Largest content-size error we attribute to window decorations, in logical points.
+const MAX_FRAME_ERROR: f32 = 64.0;
 
 impl WindowFit {
     fn new(desired: Vec2) -> Self {
@@ -346,7 +354,7 @@ impl WindowFit {
     }
 
     fn apply(&self) {
-        let target = self.desired + self.offset;
+        let target = (self.desired + self.offset).max(self.desired * 0.5);
         miniquad::window::set_window_size(target.x.round() as u32, target.y.round() as u32);
     }
 
@@ -360,7 +368,9 @@ impl WindowFit {
         }
         let err = self.desired - current;
         if self.stable_frames == 8 && self.fixes < 3 && (err.x.abs() > 1.5 || err.y.abs() > 1.5) {
-            self.offset += err;
+            if err.x.abs() <= MAX_FRAME_ERROR && err.y.abs() <= MAX_FRAME_ERROR {
+                self.offset += err;
+            }
             self.fixes += 1;
             self.apply();
         }
