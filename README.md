@@ -1,6 +1,8 @@
 # Minesweeper
 
-A minesweeper game in the classic desktop style, written in Rust with [macroquad](https://macroquad.rs). Everything is drawn in code, so there are no image assets.
+![Minesweeper](assets/logo.png)
+
+A minesweeper game in the classic desktop style, written in Rust with [macroquad](https://macroquad.rs). The board, counters and face are all drawn in code; the only image files are the logo and app icon.
 
 ```sh
 cargo run --release
@@ -35,3 +37,4 @@ In the Custom dialog, hold **Shift** to step by 10. Holding a +/− button auto-
 - `src/game.rs`: rules (mine placement, flood fill, chording, win/loss) and their unit tests
 - `src/draw.rs`: drawing helpers (bevels, pixel-art digits, LED counters, face, mines, flags)
 - `src/main.rs`: window, menu, Custom dialog, input handling
+- `assets/`: logo and icon. The SVGs are the sources; the PNGs are rendered from them, and `icon-16/32/64.png` are built into the binary as the window and Dock icon

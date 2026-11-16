@@ -30,8 +30,22 @@ fn window_conf() -> Conf {
         window_height: h as i32,
         window_resizable: false,
         high_dpi: true,
+        icon: app_icon(),
         ..Default::default()
     }
+}
+
+/// Window / Dock icon, rendered from assets/icon.svg.
+fn app_icon() -> Option<miniquad::conf::Icon> {
+    fn rgba<const N: usize>(png: &[u8]) -> Option<[u8; N]> {
+        let img = Image::from_file_with_format(png, Some(ImageFormat::Png)).ok()?;
+        img.bytes.try_into().ok()
+    }
+    Some(miniquad::conf::Icon {
+        small: rgba(include_bytes!("../assets/icon-16.png"))?,
+        medium: rgba(include_bytes!("../assets/icon-32.png"))?,
+        big: rgba(include_bytes!("../assets/icon-64.png"))?,
+    })
 }
 
 fn new_seed() -> u64 {
@@ -757,5 +771,13 @@ async fn main() {
         }
         app.draw();
         next_frame().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn app_icon_pngs_decode_at_the_right_sizes() {
+        assert!(super::app_icon().is_some());
     }
 }
