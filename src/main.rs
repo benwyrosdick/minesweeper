@@ -1,0 +1,761 @@
+mod draw;
+mod game;
+
+use draw::{Face, FACE_SIZE, HILITE, INK, LED_H, LED_W, NAVY, SHADOW, SILVER};
+use game::{Config, Game, Mark, Mode, Status};
+use macroquad::prelude::*;
+
+const CELL: f32 = 32.0;
+const MENU_H: f32 = 24.0;
+const PAD: f32 = 12.0;
+const BORDER: f32 = 6.0;
+const HEADER_H: f32 = 66.0;
+const FONT: u16 = 20;
+
+fn window_size(c: Config) -> (f32, f32) {
+    let w = 2.0 * PAD + 2.0 * BORDER + c.width as f32 * CELL;
+    let h = MENU_H + PAD + HEADER_H + PAD + 2.0 * BORDER + c.height as f32 * CELL + PAD;
+    (w, h)
+}
+
+fn board_origin() -> Vec2 {
+    vec2(PAD + BORDER, MENU_H + PAD + HEADER_H + PAD + BORDER)
+}
+
+fn window_conf() -> Conf {
+    let (w, h) = window_size(Config::BEGINNER);
+    Conf {
+        window_title: "Minesweeper".to_owned(),
+        window_width: w as i32,
+        window_height: h as i32,
+        window_resizable: false,
+        high_dpi: true,
+        ..Default::default()
+    }
+}
+
+fn new_seed() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0x5EED)
+}
+
+// Layout is done in logical points; on Retina displays everything is rendered at
+// `dpi()` times that resolution through the camera so pixel art and text stay crisp.
+fn dpi() -> f32 {
+    screen_dpi_scale()
+}
+
+/// Window content size in logical points (macroquad already divides out the DPI scale).
+fn logical_screen() -> Vec2 {
+    vec2(screen_width(), screen_height())
+}
+
+/// Mouse position in logical points (macroquad already divides out the DPI scale).
+fn mouse() -> Vec2 {
+    mouse_position().into()
+}
+
+fn text(s: &str, x: f32, baseline: f32, color: Color) {
+    let params = TextParams {
+        font_size: (FONT as f32 * dpi()) as u16,
+        font_scale: 1.0 / dpi(),
+        color,
+        ..Default::default()
+    };
+    draw_text_ex(s, x, baseline, params);
+}
+
+fn text_width(s: &str) -> f32 {
+    measure_text(s, None, (FONT as f32 * dpi()) as u16, 1.0 / dpi()).width
+}
+
+/// Rasterize every printable ASCII glyph up front. Glyphs added to macroquad's font
+/// atlas mid-frame can fail to draw, which showed up as missing letters in the dialog.
+fn preload_glyphs() {
+    let ascii: String = (' '..='~').collect();
+    text(&ascii, -10_000.0, -10_000.0, INK);
+}
+
+fn button(r: Rect, label: &str, pressed: bool) {
+    draw_rectangle(r.x, r.y, r.w, r.h, INK);
+    draw::panel(r.x + 1.0, r.y + 1.0, r.w - 2.0, r.h - 2.0, 2.0, !pressed);
+    let off = if pressed { 1.0 } else { 0.0 };
+    text(label, r.x + (r.w - text_width(label)) / 2.0 + off, r.y + r.h / 2.0 + 6.0 + off, INK);
+}
+
+// ---------------------------------------------------------------- menu
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Item {
+    New,
+    Mode(Mode),
+    Marks,
+    Exit,
+    Separator,
+}
+
+const MENU_ITEMS: [Item; 10] = [
+    Item::New,
+    Item::Separator,
+    Item::Mode(Mode::Beginner),
+    Item::Mode(Mode::Intermediate),
+    Item::Mode(Mode::Expert),
+    Item::Mode(Mode::Custom),
+    Item::Separator,
+    Item::Marks,
+    Item::Separator,
+    Item::Exit,
+];
+const MENU_TITLE: Rect = Rect { x: 4.0, y: 2.0, w: 56.0, h: MENU_H - 4.0 };
+const MENU_W: f32 = 210.0;
+const ROW_H: f32 = 22.0;
+const SEP_H: f32 = 9.0;
+
+fn item_label(item: Item) -> (&'static str, &'static str) {
+    match item {
+        Item::New => ("New", "F2"),
+        Item::Mode(Mode::Beginner) => ("Beginner", "1"),
+        Item::Mode(Mode::Intermediate) => ("Intermediate", "2"),
+        Item::Mode(Mode::Expert) => ("Expert", "3"),
+        Item::Mode(Mode::Custom) => ("Custom...", "4"),
+        Item::Marks => ("Marks (?)", "M"),
+        Item::Exit => ("Exit", "Q"),
+        Item::Separator => ("", ""),
+    }
+}
+
+fn menu_rect() -> Rect {
+    let h: f32 = MENU_ITEMS
+        .iter()
+        .map(|&i| if i == Item::Separator { SEP_H } else { ROW_H })
+        .sum();
+    Rect::new(MENU_TITLE.x, MENU_H - 1.0, MENU_W, h + 6.0)
+}
+
+fn menu_layout() -> Vec<(Item, Rect)> {
+    let m = menu_rect();
+    let mut y = m.y + 3.0;
+    MENU_ITEMS
+        .iter()
+        .map(|&item| {
+            let h = if item == Item::Separator { SEP_H } else { ROW_H };
+            let r = Rect::new(m.x + 3.0, y, m.w - 6.0, h);
+            y += h;
+            (item, r)
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------- custom dialog
+
+const DIALOG_W: f32 = 264.0;
+const DIALOG_H: f32 = 200.0;
+const FIELD_LABELS: [&str; 3] = ["Height:", "Width:", "Mines:"];
+
+enum DialogResult {
+    Ok(Config),
+    Cancel,
+}
+
+struct Repeat {
+    field: usize,
+    delta: i32,
+    next_at: f64,
+}
+
+struct CustomDialog {
+    values: [usize; 3], // height, width, mines
+    repeat: Option<Repeat>,
+}
+
+impl CustomDialog {
+    fn new(c: Config) -> Self {
+        CustomDialog { values: [c.height, c.width, c.mines], repeat: None }
+    }
+
+    fn rect(&self) -> Rect {
+        let Vec2 { x: sw, y: sh } = logical_screen();
+        Rect::new(((sw - DIALOG_W) / 2.0).round(), ((sh - DIALOG_H) / 2.0).round().max(MENU_H), DIALOG_W, DIALOG_H)
+    }
+
+    fn row_y(&self, field: usize) -> f32 {
+        self.rect().y + 38.0 + field as f32 * 34.0
+    }
+
+    fn minus_rect(&self, field: usize) -> Rect {
+        Rect::new(self.rect().x + 172.0, self.row_y(field), 26.0, 26.0)
+    }
+
+    fn plus_rect(&self, field: usize) -> Rect {
+        Rect::new(self.rect().x + 202.0, self.row_y(field), 26.0, 26.0)
+    }
+
+    fn ok_rect(&self) -> Rect {
+        let r = self.rect();
+        Rect::new(r.x + 36.0, r.y + r.h - 46.0, 86.0, 30.0)
+    }
+
+    fn cancel_rect(&self) -> Rect {
+        let r = self.rect();
+        Rect::new(r.x + r.w - 122.0, r.y + r.h - 46.0, 86.0, 30.0)
+    }
+
+    fn config(&self) -> Config {
+        Config::custom(self.values[1], self.values[0], self.values[2])
+    }
+
+    fn step(&mut self, field: usize, delta: i32) {
+        let v = (self.values[field] as i32 + delta).max(0) as usize;
+        self.values[field] = v;
+        let c = Config::custom(self.values[1], self.values[0], self.values[2]);
+        self.values = [c.height, c.width, c.mines];
+    }
+
+    fn update(&mut self, mouse: Vec2) -> Option<DialogResult> {
+        if is_key_pressed(KeyCode::Escape) {
+            return Some(DialogResult::Cancel);
+        }
+        if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter) {
+            return Some(DialogResult::Ok(self.config()));
+        }
+
+        let now = get_time();
+        let big = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+        let amount = if big { 10 } else { 1 };
+
+        if is_mouse_button_pressed(MouseButton::Left) {
+            for field in 0..3 {
+                for (r, sign) in [(self.minus_rect(field), -1), (self.plus_rect(field), 1)] {
+                    if r.contains(mouse) {
+                        self.step(field, sign * amount);
+                        self.repeat = Some(Repeat { field, delta: sign, next_at: now + 0.4 });
+                    }
+                }
+            }
+        }
+        if let Some(Repeat { field, delta, next_at }) = self.repeat
+            && is_mouse_button_down(MouseButton::Left)
+        {
+            let r = if delta < 0 { self.minus_rect(field) } else { self.plus_rect(field) };
+            if r.contains(mouse) && now >= next_at {
+                self.repeat = Some(Repeat { field, delta, next_at: now + 0.035 });
+                self.step(field, delta * amount);
+            }
+        }
+        if is_mouse_button_released(MouseButton::Left) {
+            self.repeat = None;
+            if self.ok_rect().contains(mouse) {
+                return Some(DialogResult::Ok(self.config()));
+            }
+            if self.cancel_rect().contains(mouse) {
+                return Some(DialogResult::Cancel);
+            }
+        }
+        None
+    }
+
+    fn draw(&self, mouse: Vec2) {
+        let r = self.rect();
+        draw_rectangle(r.x, r.y, r.w, r.h, INK);
+        draw::panel(r.x + 1.0, r.y + 1.0, r.w - 2.0, r.h - 2.0, 2.0, true);
+        draw_rectangle(r.x + 4.0, r.y + 4.0, r.w - 8.0, 22.0, NAVY);
+        text("Custom Field", r.x + 10.0, r.y + 20.0, HILITE);
+
+        let held = is_mouse_button_down(MouseButton::Left);
+        for (field, label) in FIELD_LABELS.iter().enumerate() {
+            let y = self.row_y(field);
+            text(label, r.x + 18.0, y + 19.0, INK);
+            let vb = Rect::new(r.x + 96.0, y, 66.0, 26.0);
+            draw_rectangle(vb.x, vb.y, vb.w, vb.h, HILITE);
+            draw::bevel(vb.x, vb.y, vb.w, vb.h, 2.0, false);
+            let v = self.values[field].to_string();
+            text(&v, vb.x + vb.w - 8.0 - text_width(&v), y + 19.0, INK);
+            let (mr, pr) = (self.minus_rect(field), self.plus_rect(field));
+            button(mr, "-", held && mr.contains(mouse));
+            button(pr, "+", held && pr.contains(mouse));
+        }
+        let (ok, cancel) = (self.ok_rect(), self.cancel_rect());
+        button(ok, "OK", held && ok.contains(mouse));
+        button(cancel, "Cancel", held && cancel.contains(mouse));
+    }
+}
+
+// ---------------------------------------------------------------- app
+
+struct App {
+    mode: Mode,
+    config: Config,
+    game: Game,
+    marks: bool,
+    started_at: Option<f64>,
+    finished_at: Option<f64>,
+    menu_open: bool,
+    dialog: Option<CustomDialog>,
+    face_down: bool,
+    /// Left button went down on the board and hasn't been released yet.
+    left_board: bool,
+    /// Both buttons (or middle) are down: releasing will chord.
+    chording: bool,
+    /// After a chord, ignore further releases until every button is up.
+    swallow: bool,
+    quit: bool,
+    window: WindowFit,
+}
+
+/// Keeps the window's content area at the size the board needs.
+///
+/// We call miniquad directly: macroquad's `request_new_screen_size` multiplies by the DPI
+/// scale, but on macOS miniquad applies the value in points, doubling the window on Retina.
+/// miniquad also sizes the whole window frame, so the content ends up short by the
+/// title-bar height. Once the size settles we measure that error, re-request, and remember
+/// the offset so later mode switches land in one step.
+struct WindowFit {
+    desired: Vec2,
+    offset: Vec2,
+    last: Vec2,
+    stable_frames: u32,
+    fixes: u32,
+}
+
+impl WindowFit {
+    fn new(desired: Vec2) -> Self {
+        WindowFit { desired, offset: Vec2::ZERO, last: Vec2::ZERO, stable_frames: 0, fixes: 0 }
+    }
+
+    fn request(&mut self, desired: Vec2) {
+        self.desired = desired;
+        self.stable_frames = 0;
+        self.fixes = 0;
+        self.apply();
+    }
+
+    fn apply(&self) {
+        let target = self.desired + self.offset;
+        miniquad::window::set_window_size(target.x.round() as u32, target.y.round() as u32);
+    }
+
+    fn update(&mut self) {
+        let current = logical_screen();
+        if current.distance(self.last) < 0.5 {
+            self.stable_frames += 1;
+        } else {
+            self.stable_frames = 0;
+            self.last = current;
+        }
+        let err = self.desired - current;
+        if self.stable_frames == 8 && self.fixes < 3 && (err.x.abs() > 1.5 || err.y.abs() > 1.5) {
+            self.offset += err;
+            self.fixes += 1;
+            self.apply();
+        }
+    }
+}
+
+impl App {
+    fn new() -> Self {
+        let config = Config::BEGINNER;
+        App {
+            mode: Mode::Beginner,
+            config,
+            game: Game::new(config, new_seed()),
+            marks: true,
+            started_at: None,
+            finished_at: None,
+            menu_open: false,
+            dialog: None,
+            face_down: false,
+            left_board: false,
+            chording: false,
+            swallow: false,
+            quit: false,
+            window: WindowFit::new(window_size(config).into()),
+        }
+    }
+
+    fn new_game(&mut self) {
+        self.game = Game::new(self.config, new_seed());
+        self.started_at = None;
+        self.finished_at = None;
+        self.left_board = false;
+        self.chording = false;
+        self.swallow = true;
+    }
+
+    fn set_config(&mut self, mode: Mode, config: Config) {
+        self.mode = mode;
+        self.config = config;
+        self.window.request(window_size(config).into());
+        self.new_game();
+    }
+
+    fn activate(&mut self, item: Item) {
+        match item {
+            Item::New => self.new_game(),
+            Item::Mode(Mode::Custom) => self.dialog = Some(CustomDialog::new(self.config)),
+            Item::Mode(m) => self.set_config(m, m.preset().unwrap()),
+            Item::Marks => self.marks = !self.marks,
+            Item::Exit => self.quit = true,
+            Item::Separator => {}
+        }
+    }
+
+    fn elapsed(&self) -> i32 {
+        match self.started_at {
+            None => 0,
+            Some(start) => {
+                let end = self.finished_at.unwrap_or_else(get_time);
+                ((end - start) as i32 + 1).min(999)
+            }
+        }
+    }
+
+    fn face_rect(&self) -> Rect {
+        let (w, _) = window_size(self.config);
+        Rect::new(
+            ((w - FACE_SIZE) / 2.0).round(),
+            MENU_H + PAD + ((HEADER_H - FACE_SIZE) / 2.0).round(),
+            FACE_SIZE,
+            FACE_SIZE,
+        )
+    }
+
+    fn cell_at(&self, p: Vec2) -> Option<(usize, usize)> {
+        let rel = p - board_origin();
+        if rel.x < 0.0 || rel.y < 0.0 {
+            return None;
+        }
+        let (x, y) = ((rel.x / CELL) as usize, (rel.y / CELL) as usize);
+        (x < self.config.width && y < self.config.height).then_some((x, y))
+    }
+
+    // ------------------------------------------------------------ input
+
+    fn update(&mut self) {
+        let mouse = mouse();
+        self.window.update();
+
+        if let Some(dialog) = &mut self.dialog {
+            match dialog.update(mouse) {
+                Some(DialogResult::Ok(cfg)) => {
+                    self.dialog = None;
+                    self.set_config(Mode::Custom, cfg);
+                }
+                Some(DialogResult::Cancel) => self.dialog = None,
+                None => {}
+            }
+            return;
+        }
+
+        self.handle_keys();
+        if self.handle_menu(mouse) {
+            return;
+        }
+        self.handle_face(mouse);
+        self.handle_board(mouse);
+        self.track_time();
+    }
+
+    fn handle_keys(&mut self) {
+        let keys = [
+            (KeyCode::F2, Item::New),
+            (KeyCode::N, Item::New),
+            (KeyCode::Key1, Item::Mode(Mode::Beginner)),
+            (KeyCode::Key2, Item::Mode(Mode::Intermediate)),
+            (KeyCode::Key3, Item::Mode(Mode::Expert)),
+            (KeyCode::Key4, Item::Mode(Mode::Custom)),
+            (KeyCode::C, Item::Mode(Mode::Custom)),
+            (KeyCode::M, Item::Marks),
+            (KeyCode::Q, Item::Exit),
+        ];
+        for (key, item) in keys {
+            if is_key_pressed(key) {
+                self.menu_open = false;
+                self.activate(item);
+            }
+        }
+        if is_key_pressed(KeyCode::Escape) {
+            self.menu_open = false;
+        }
+    }
+
+    /// Returns true when the menu consumed this frame's mouse input.
+    fn handle_menu(&mut self, mouse: Vec2) -> bool {
+        if is_mouse_button_pressed(MouseButton::Left) {
+            if MENU_TITLE.contains(mouse) {
+                self.menu_open = !self.menu_open;
+                return true;
+            }
+            if self.menu_open {
+                self.menu_open = false;
+                self.swallow = true;
+                if let Some((item, _)) = menu_layout().into_iter().find(|(_, r)| r.contains(mouse)) {
+                    self.activate(item);
+                }
+                return true;
+            }
+        }
+        if self.menu_open && is_mouse_button_pressed(MouseButton::Right) {
+            self.menu_open = false;
+            self.swallow = true;
+            return true;
+        }
+        self.menu_open
+    }
+
+    fn handle_face(&mut self, mouse: Vec2) {
+        let r = self.face_rect();
+        if is_mouse_button_pressed(MouseButton::Left) && r.contains(mouse) {
+            self.face_down = true;
+        }
+        if is_mouse_button_released(MouseButton::Left) {
+            if self.face_down && r.contains(mouse) {
+                self.new_game();
+            }
+            self.face_down = false;
+        }
+    }
+
+    fn handle_board(&mut self, mouse: Vec2) {
+        use MouseButton::{Left, Middle, Right};
+        let (l_down, r_down, m_down) =
+            (is_mouse_button_down(Left), is_mouse_button_down(Right), is_mouse_button_down(Middle));
+
+        if !self.game.is_over() {
+            let cell = self.cell_at(mouse);
+
+            let shift = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+            if is_mouse_button_pressed(Left)
+                && !self.swallow
+                && let Some((x, y)) = cell
+            {
+                if shift && !r_down {
+                    // Shift+click marks like a right click (handy on trackpads). Swallow the
+                    // rest of the press so releasing can never reveal the cell.
+                    self.game.toggle_mark(x, y, self.marks);
+                    self.swallow = true;
+                } else {
+                    self.left_board = true;
+                    if r_down {
+                        self.chording = true;
+                    }
+                }
+            }
+            if is_mouse_button_pressed(Right) && !self.swallow {
+                if self.left_board && l_down {
+                    self.chording = true;
+                } else if let Some((x, y)) = cell {
+                    self.game.toggle_mark(x, y, self.marks);
+                }
+            }
+            if is_mouse_button_pressed(Middle) && cell.is_some() && !self.swallow {
+                self.chording = true;
+            }
+
+            let released = is_mouse_button_released(Left)
+                || is_mouse_button_released(Right)
+                || is_mouse_button_released(Middle);
+            if released && self.chording {
+                if let Some((x, y)) = cell {
+                    self.game.chord(x, y);
+                }
+                self.chording = false;
+                self.left_board = false;
+                self.swallow = true;
+            } else if is_mouse_button_released(Left) && self.left_board {
+                if let Some((x, y)) = cell {
+                    if self.game.cell(x, y).revealed {
+                        self.game.chord(x, y);
+                    } else {
+                        self.game.reveal(x, y);
+                    }
+                }
+                self.left_board = false;
+            }
+        }
+
+        if !l_down && !r_down && !m_down {
+            self.swallow = false;
+            self.left_board = false;
+            self.chording = false;
+        }
+    }
+
+    fn track_time(&mut self) {
+        let now = get_time();
+        match self.game.status() {
+            Status::Playing if self.started_at.is_none() => self.started_at = Some(now),
+            Status::Won | Status::Lost if self.finished_at.is_none() => {
+                self.started_at.get_or_insert(now);
+                self.finished_at = Some(now);
+            }
+            _ => {}
+        }
+    }
+
+    // ------------------------------------------------------------ rendering
+
+    fn interacting(&self) -> bool {
+        !self.game.is_over() && !self.swallow && !self.menu_open && self.dialog.is_none()
+    }
+
+    /// Cells drawn sunken while the mouse is held (single press or chord preview).
+    fn pressed_cells(&self, mouse: Vec2) -> Vec<(usize, usize)> {
+        if !self.interacting() {
+            return vec![];
+        }
+        let Some((x, y)) = self.cell_at(mouse) else { return vec![] };
+        let left = self.left_board && is_mouse_button_down(MouseButton::Left);
+        if self.chording || (left && self.game.cell(x, y).revealed) {
+            std::iter::once((x, y)).chain(self.game.neighbors(x, y)).collect()
+        } else if left {
+            vec![(x, y)]
+        } else {
+            vec![]
+        }
+    }
+
+    fn face(&self) -> Face {
+        match self.game.status() {
+            Status::Lost => Face::Dead,
+            Status::Won => Face::Cool,
+            _ if self.interacting() && (self.chording || (self.left_board && is_mouse_button_down(MouseButton::Left))) => {
+                Face::Surprised
+            }
+            _ => Face::Smile,
+        }
+    }
+
+    fn draw(&self) {
+        let mouse = mouse();
+        let (w, h) = window_size(self.config);
+        let screen = logical_screen();
+        // Negative height: from_display_rect is y-up (meant for render targets), we want y-down.
+        set_camera(&Camera2D::from_display_rect(Rect::new(0.0, screen.y, screen.x, -screen.y)));
+        clear_background(SILVER);
+
+        // Window frame and header.
+        draw::bevel(0.0, MENU_H, w, h - MENU_H, 3.0, true);
+        draw::bevel(PAD, MENU_H + PAD, w - 2.0 * PAD, HEADER_H, 3.0, false);
+        let led_y = MENU_H + PAD + ((HEADER_H - LED_H) / 2.0).round();
+        draw::led(self.game.mines_left(), PAD + 10.0, led_y);
+        draw::led(self.elapsed(), w - PAD - 10.0 - LED_W, led_y);
+        let fr = self.face_rect();
+        draw::face_button(fr.x, fr.y, self.face(), self.face_down && fr.contains(mouse));
+
+        // Board.
+        let origin = board_origin();
+        let (bw, bh) = (self.config.width as f32 * CELL, self.config.height as f32 * CELL);
+        draw::bevel(origin.x - BORDER, origin.y - BORDER, bw + 2.0 * BORDER, bh + 2.0 * BORDER, BORDER, false);
+        let pressed = self.pressed_cells(mouse);
+        for y in 0..self.config.height {
+            for x in 0..self.config.width {
+                let p = origin + vec2(x as f32, y as f32) * CELL;
+                self.draw_cell(x, y, p.x, p.y, pressed.contains(&(x, y)));
+            }
+        }
+
+        self.draw_menu(mouse, w);
+        if let Some(dialog) = &self.dialog {
+            dialog.draw(mouse);
+        }
+    }
+
+    fn draw_cell(&self, x: usize, y: usize, px: f32, py: f32, pressed: bool) {
+        let c = self.game.cell(x, y);
+        let lost = self.game.status() == Status::Lost;
+
+        let flat = |fill: Color| {
+            draw_rectangle(px, py, CELL, CELL, fill);
+            draw_rectangle(px, py, CELL, 2.0, SHADOW);
+            draw_rectangle(px, py, 2.0, CELL, SHADOW);
+        };
+        let raised = || draw::panel(px, py, CELL, CELL, 4.0, true);
+
+        if c.revealed {
+            flat(SILVER);
+            if c.adjacent > 0 {
+                draw::number(c.adjacent, px, py, CELL);
+            }
+        } else if lost && c.mine && c.mark != Mark::Flag {
+            let boom = self.game.exploded() == Some((x, y));
+            flat(if boom { draw::ALARM } else { SILVER });
+            draw::mine(px, py, CELL);
+        } else if lost && !c.mine && c.mark == Mark::Flag {
+            flat(SILVER);
+            draw::wrong_flag(px, py, CELL);
+        } else {
+            match c.mark {
+                Mark::Flag => {
+                    raised();
+                    draw::flag(px, py, CELL);
+                }
+                Mark::Question if pressed => {
+                    flat(SILVER);
+                    draw::question(px + 1.0, py + 1.0, CELL);
+                }
+                Mark::Question => {
+                    raised();
+                    draw::question(px, py, CELL);
+                }
+                Mark::None if pressed => flat(SILVER),
+                Mark::None => raised(),
+            }
+        }
+    }
+
+    fn draw_menu(&self, mouse: Vec2, w: f32) {
+        draw_rectangle(0.0, 0.0, w, MENU_H, SILVER);
+        let t = MENU_TITLE;
+        if self.menu_open {
+            draw_rectangle(t.x, t.y, t.w, t.h, NAVY);
+        }
+        text("Game", t.x + 8.0, t.y + 15.0, if self.menu_open { HILITE } else { INK });
+        if !self.menu_open {
+            return;
+        }
+
+        let m = menu_rect();
+        draw_rectangle(m.x, m.y, m.w, m.h, INK);
+        draw::panel(m.x, m.y, m.w - 1.0, m.h - 1.0, 2.0, true);
+        for (item, r) in menu_layout() {
+            if item == Item::Separator {
+                let ly = r.y + (r.h / 2.0).floor();
+                draw_rectangle(r.x + 2.0, ly, r.w - 4.0, 1.0, SHADOW);
+                draw_rectangle(r.x + 2.0, ly + 1.0, r.w - 4.0, 1.0, HILITE);
+                continue;
+            }
+            let hover = r.contains(mouse);
+            if hover {
+                draw_rectangle(r.x, r.y, r.w, r.h, NAVY);
+            }
+            let color = if hover { HILITE } else { INK };
+            let checked = match item {
+                Item::Mode(m) => m == self.mode,
+                Item::Marks => self.marks,
+                _ => false,
+            };
+            if checked {
+                draw::checkmark(r.x + 8.0, r.y + 6.0, color);
+            }
+            let (label, shortcut) = item_label(item);
+            text(label, r.x + 26.0, r.y + 16.0, color);
+            text(shortcut, r.x + r.w - 12.0 - text_width(shortcut), r.y + 16.0, color);
+        }
+    }
+}
+
+#[macroquad::main(window_conf)]
+async fn main() {
+    let mut app = App::new();
+    preload_glyphs();
+    loop {
+        app.update();
+        if app.quit {
+            break;
+        }
+        app.draw();
+        next_frame().await;
+    }
+}
