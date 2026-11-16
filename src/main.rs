@@ -10,7 +10,7 @@ const MENU_H: f32 = 24.0;
 const PAD: f32 = 12.0;
 const BORDER: f32 = 6.0;
 const HEADER_H: f32 = 66.0;
-const FONT: u16 = 20;
+const FONT: u16 = 15;
 
 fn window_size(c: Config) -> (f32, f32) {
     let w = 2.0 * PAD + 2.0 * BORDER + c.width as f32 * CELL;
@@ -71,9 +71,26 @@ fn mouse() -> Vec2 {
     mouse_position().into()
 }
 
+/// UI font: Noto Sans (SIL OFL, see assets/NotoSans-OFL.txt). macroquad's built-in font
+/// is a tiny bitmap font that turns blurry and blocky when scaled to menu size.
+fn ui_font() -> &'static Font {
+    thread_local! {
+        static UI_FONT: &'static Font = Box::leak(Box::new(
+            load_ttf_font_from_bytes(include_bytes!("../assets/NotoSans-Regular.ttf"))
+                .expect("embedded UI font"),
+        ));
+    }
+    UI_FONT.with(|f| *f)
+}
+
+fn font_px() -> u16 {
+    (FONT as f32 * dpi()).round() as u16
+}
+
 fn text(s: &str, x: f32, baseline: f32, color: Color) {
     let params = TextParams {
-        font_size: (FONT as f32 * dpi()) as u16,
+        font: Some(ui_font()),
+        font_size: font_px(),
         font_scale: 1.0 / dpi(),
         color,
         ..Default::default()
@@ -82,14 +99,13 @@ fn text(s: &str, x: f32, baseline: f32, color: Color) {
 }
 
 fn text_width(s: &str) -> f32 {
-    measure_text(s, None, (FONT as f32 * dpi()) as u16, 1.0 / dpi()).width
+    measure_text(s, Some(ui_font()), font_px(), 1.0 / dpi()).width
 }
 
 /// Rasterize every printable ASCII glyph up front. Glyphs added to macroquad's font
 /// atlas mid-frame can fail to draw, which showed up as missing letters in the dialog.
 fn preload_glyphs() {
-    let ascii: String = (' '..='~').collect();
-    text(&ascii, -10_000.0, -10_000.0, INK);
+    ui_font().populate_font_cache(&Font::ascii_character_list(), font_px());
 }
 
 fn button(r: Rect, label: &str, pressed: bool) {
