@@ -1,8 +1,10 @@
 mod draw;
 mod game;
+mod scores;
 
 use draw::{Face, FACE_SIZE, HILITE, INK, LED_H, LED_W, NAVY, SHADOW, SILVER};
 use game::{Config, Game, Mark, Mode, Status};
+use scores::{Leaderboard, Placement, Run};
 use macroquad::prelude::*;
 
 const CELL: f32 = 32.0;
@@ -128,11 +130,12 @@ enum Item {
     New,
     Mode(Mode),
     Marks,
+    Leaderboard,
     Exit,
     Separator,
 }
 
-const MENU_ITEMS: [Item; 10] = [
+const MENU_ITEMS: [Item; 11] = [
     Item::New,
     Item::Separator,
     Item::Mode(Mode::Beginner),
@@ -141,6 +144,7 @@ const MENU_ITEMS: [Item; 10] = [
     Item::Mode(Mode::Custom),
     Item::Separator,
     Item::Marks,
+    Item::Leaderboard,
     Item::Separator,
     Item::Exit,
 ];
@@ -157,6 +161,7 @@ fn item_label(item: Item) -> (&'static str, &'static str) {
         Item::Mode(Mode::Expert) => ("Expert", "3"),
         Item::Mode(Mode::Custom) => ("Custom...", "4"),
         Item::Marks => ("Marks (?)", "M"),
+        Item::Leaderboard => ("Leaderboard...", "L"),
         Item::Exit => ("Exit", "Q"),
         Item::Separator => ("", ""),
     }
@@ -184,16 +189,54 @@ fn menu_layout() -> Vec<(Item, Rect)> {
         .collect()
 }
 
+// ---------------------------------------------------------------- dialogs
+
+enum Dialog {
+    Custom(CustomDialog),
+    Leaderboard(LeaderboardDialog),
+    Summary(SummaryDialog),
+}
+
+/// What a dialog asks the app to do once it's dismissed.
+enum Action {
+    Close,
+    Configure(Config),
+    NewGame,
+    ShowLeaderboard(Mode),
+}
+
+fn mode_name(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Beginner => "Beginner",
+        Mode::Intermediate => "Intermediate",
+        Mode::Expert => "Expert",
+        Mode::Custom => "Custom",
+    }
+}
+
+/// A `w` x `h` dialog centered in the window, never over the menu bar.
+fn centered(w: f32, h: f32) -> Rect {
+    let Vec2 { x: sw, y: sh } = logical_screen();
+    Rect::new(((sw - w) / 2.0).round(), ((sh - h) / 2.0).round().max(MENU_H), w, h)
+}
+
+/// Outline, raised face and navy title bar shared by every dialog.
+fn dialog_frame(r: Rect, title: &str) {
+    draw_rectangle(r.x, r.y, r.w, r.h, INK);
+    draw::panel(r.x + 1.0, r.y + 1.0, r.w - 2.0, r.h - 2.0, 2.0, true);
+    draw_rectangle(r.x + 4.0, r.y + 4.0, r.w - 8.0, 22.0, NAVY);
+    text(title, r.x + 10.0, r.y + 20.0, HILITE);
+}
+
+fn clicked(r: Rect, mouse: Vec2) -> bool {
+    is_mouse_button_released(MouseButton::Left) && r.contains(mouse)
+}
+
 // ---------------------------------------------------------------- custom dialog
 
 const DIALOG_W: f32 = 264.0;
 const DIALOG_H: f32 = 200.0;
 const FIELD_LABELS: [&str; 3] = ["Height:", "Width:", "Mines:"];
-
-enum DialogResult {
-    Ok(Config),
-    Cancel,
-}
 
 struct Repeat {
     field: usize,
@@ -212,8 +255,7 @@ impl CustomDialog {
     }
 
     fn rect(&self) -> Rect {
-        let Vec2 { x: sw, y: sh } = logical_screen();
-        Rect::new(((sw - DIALOG_W) / 2.0).round(), ((sh - DIALOG_H) / 2.0).round().max(MENU_H), DIALOG_W, DIALOG_H)
+        centered(DIALOG_W, DIALOG_H)
     }
 
     fn row_y(&self, field: usize) -> f32 {
@@ -249,12 +291,12 @@ impl CustomDialog {
         self.values = [c.height, c.width, c.mines];
     }
 
-    fn update(&mut self, mouse: Vec2) -> Option<DialogResult> {
+    fn update(&mut self, mouse: Vec2) -> Option<Action> {
         if is_key_pressed(KeyCode::Escape) {
-            return Some(DialogResult::Cancel);
+            return Some(Action::Close);
         }
         if is_key_pressed(KeyCode::Enter) || is_key_pressed(KeyCode::KpEnter) {
-            return Some(DialogResult::Ok(self.config()));
+            return Some(Action::Configure(self.config()));
         }
 
         let now = get_time();
@@ -283,10 +325,10 @@ impl CustomDialog {
         if is_mouse_button_released(MouseButton::Left) {
             self.repeat = None;
             if self.ok_rect().contains(mouse) {
-                return Some(DialogResult::Ok(self.config()));
+                return Some(Action::Configure(self.config()));
             }
             if self.cancel_rect().contains(mouse) {
-                return Some(DialogResult::Cancel);
+                return Some(Action::Close);
             }
         }
         None
@@ -294,10 +336,7 @@ impl CustomDialog {
 
     fn draw(&self, mouse: Vec2) {
         let r = self.rect();
-        draw_rectangle(r.x, r.y, r.w, r.h, INK);
-        draw::panel(r.x + 1.0, r.y + 1.0, r.w - 2.0, r.h - 2.0, 2.0, true);
-        draw_rectangle(r.x + 4.0, r.y + 4.0, r.w - 8.0, 22.0, NAVY);
-        text("Custom Field", r.x + 10.0, r.y + 20.0, HILITE);
+        dialog_frame(r, "Custom Field");
 
         let held = is_mouse_button_down(MouseButton::Left);
         for (field, label) in FIELD_LABELS.iter().enumerate() {
@@ -318,6 +357,215 @@ impl CustomDialog {
     }
 }
 
+// ---------------------------------------------------------------- leaderboard dialog
+
+const BOARD_W: f32 = 300.0;
+const BOARD_H: f32 = 352.0;
+const BOARD_ROW_H: f32 = 20.0;
+/// Sized to their labels; together they span the list below.
+const TAB_W: [f32; 3] = [84.0, 108.0, 76.0];
+
+/// The ten fastest wins for each preset, one difficulty at a time behind tabs.
+struct LeaderboardDialog {
+    tab: usize,
+    tops: [Vec<Run>; 3],
+    totals: [usize; 3],
+    /// The run just played, highlighted if it made the list.
+    highlight: Option<Run>,
+}
+
+impl LeaderboardDialog {
+    fn new(board: &Leaderboard, mode: Mode, highlight: Option<Run>) -> Self {
+        LeaderboardDialog {
+            tab: scores::RANKED.iter().position(|&m| m == mode).unwrap_or(0),
+            tops: scores::RANKED.map(|m| board.top(m)),
+            totals: scores::RANKED.map(|m| board.ranked(m).len()),
+            highlight,
+        }
+    }
+
+    fn rect(&self) -> Rect {
+        centered(BOARD_W, BOARD_H)
+    }
+
+    fn tab_rect(&self, i: usize) -> Rect {
+        let r = self.rect();
+        let x = r.x + 12.0 + TAB_W[..i].iter().map(|w| w + 4.0).sum::<f32>();
+        Rect::new(x, r.y + 36.0, TAB_W[i], 26.0)
+    }
+
+    fn list_rect(&self) -> Rect {
+        let r = self.rect();
+        Rect::new(r.x + 12.0, r.y + 70.0, r.w - 24.0, 230.0)
+    }
+
+    fn close_rect(&self) -> Rect {
+        let r = self.rect();
+        Rect::new(r.x + r.w - 98.0, r.y + r.h - 44.0, 86.0, 30.0)
+    }
+
+    fn update(&mut self, mouse: Vec2) -> Option<Action> {
+        if [KeyCode::Escape, KeyCode::Enter, KeyCode::KpEnter, KeyCode::L].into_iter().any(is_key_pressed) {
+            return Some(Action::Close);
+        }
+        if is_key_pressed(KeyCode::Left) {
+            self.tab = (self.tab + 2) % 3;
+        }
+        if is_key_pressed(KeyCode::Right) || is_key_pressed(KeyCode::Tab) {
+            self.tab = (self.tab + 1) % 3;
+        }
+        for (i, key) in [KeyCode::Key1, KeyCode::Key2, KeyCode::Key3].into_iter().enumerate() {
+            if is_key_pressed(key) {
+                self.tab = i;
+            }
+        }
+        if is_mouse_button_pressed(MouseButton::Left)
+            && let Some(i) = (0..3).find(|&i| self.tab_rect(i).contains(mouse))
+        {
+            self.tab = i;
+        }
+        clicked(self.close_rect(), mouse).then_some(Action::Close)
+    }
+
+    fn draw(&self, mouse: Vec2) {
+        let r = self.rect();
+        dialog_frame(r, "Leaderboard");
+        for (i, &mode) in scores::RANKED.iter().enumerate() {
+            button(self.tab_rect(i), mode_name(mode), i == self.tab);
+        }
+
+        let lb = self.list_rect();
+        draw_rectangle(lb.x, lb.y, lb.w, lb.h, HILITE);
+        draw::bevel(lb.x, lb.y, lb.w, lb.h, 2.0, false);
+        let (rank_right, time_right, date_x) = (lb.x + 36.0, lb.x + 130.0, lb.x + 158.0);
+        let header = lb.y + 19.0;
+        text("#", rank_right - text_width("#"), header, SHADOW);
+        text("Seconds", time_right - text_width("Seconds"), header, SHADOW);
+        text("Date", date_x, header, SHADOW);
+        draw_rectangle(lb.x + 6.0, lb.y + 25.0, lb.w - 12.0, 1.0, SHADOW);
+
+        let top = &self.tops[self.tab];
+        if top.is_empty() {
+            let msg = "No wins yet.";
+            text(msg, lb.x + (lb.w - text_width(msg)) / 2.0, lb.y + lb.h / 2.0 + 6.0, SHADOW);
+        }
+        for (i, run) in top.iter().enumerate() {
+            let y = lb.y + 28.0 + i as f32 * BOARD_ROW_H;
+            let mine = self.highlight == Some(*run);
+            if mine {
+                draw_rectangle(lb.x + 3.0, y, lb.w - 6.0, BOARD_ROW_H, NAVY);
+            }
+            let color = if mine { HILITE } else { INK };
+            let (rank, time) = (format!("{}.", i + 1), scores::format_time(run.millis));
+            text(&rank, rank_right - text_width(&rank), y + 15.0, color);
+            text(&time, time_right - text_width(&time), y + 15.0, color);
+            text(&scores::format_date(run.when), date_x, y + 15.0, color);
+        }
+
+        let close = self.close_rect();
+        let total = match self.totals[self.tab] {
+            1 => "1 win".to_owned(),
+            n => format!("{n} wins"),
+        };
+        text(&total, r.x + 16.0, close.y + 21.0, INK);
+        button(close, "Close", is_mouse_button_down(MouseButton::Left) && close.contains(mouse));
+    }
+}
+
+// ---------------------------------------------------------------- end-of-game summary
+
+const SUMMARY_W: f32 = 280.0;
+const SUMMARY_H: f32 = 210.0;
+/// Pause before the summary pops up, so the finished board (or the explosion) shows first.
+const SUMMARY_DELAY: f64 = 0.6;
+
+struct SummaryDialog {
+    mode: Mode,
+    won: bool,
+    millis: u64,
+    cleared: f32,
+    /// Where the run placed; only wins on a preset difficulty are ranked.
+    placement: Option<Placement>,
+    saved: bool,
+}
+
+impl SummaryDialog {
+    fn rect(&self) -> Rect {
+        centered(SUMMARY_W, SUMMARY_H)
+    }
+
+    fn new_game_rect(&self) -> Rect {
+        let r = self.rect();
+        Rect::new(r.x + 36.0, r.y + r.h - 46.0, 92.0, 30.0)
+    }
+
+    fn close_rect(&self) -> Rect {
+        let r = self.rect();
+        Rect::new(r.x + r.w - 128.0, r.y + r.h - 46.0, 92.0, 30.0)
+    }
+
+    fn update(&mut self, mouse: Vec2) -> Option<Action> {
+        if [KeyCode::Enter, KeyCode::KpEnter, KeyCode::F2, KeyCode::N].into_iter().any(is_key_pressed) {
+            return Some(Action::NewGame);
+        }
+        if is_key_pressed(KeyCode::Escape) {
+            return Some(Action::Close);
+        }
+        if is_key_pressed(KeyCode::L) {
+            return Some(Action::ShowLeaderboard(self.mode));
+        }
+        if clicked(self.new_game_rect(), mouse) {
+            return Some(Action::NewGame);
+        }
+        clicked(self.close_rect(), mouse).then_some(Action::Close)
+    }
+
+    fn rows(&self) -> Vec<(&'static str, String)> {
+        let mut rows = vec![
+            ("Difficulty", mode_name(self.mode).to_owned()),
+            ("Time", format!("{} s", scores::format_time(self.millis))),
+        ];
+        match self.placement {
+            Some(p) => {
+                rows.push(("Place", format!("{} of {}", scores::ordinal(p.rank), p.total)));
+                rows.push(("Percentile", scores::ordinal(p.percentile as usize)));
+            }
+            None if !self.won => rows.push(("Cleared", format!("{:.0}%", (self.cleared * 100.0).floor()))),
+            None => {}
+        }
+        rows
+    }
+
+    fn note(&self) -> &'static str {
+        match self.placement {
+            _ if !self.saved => "Couldn't save this run.",
+            None if !self.won => "Only wins go on the leaderboard.",
+            None => "Custom games aren't ranked.",
+            Some(p) if p.total == 1 => "Your first win!",
+            Some(p) if p.rank == 1 => "New best time!",
+            Some(p) if p.rank <= scores::TOP => "You made the top ten!",
+            Some(_) => "",
+        }
+    }
+
+    fn draw(&self, mouse: Vec2) {
+        let r = self.rect();
+        dialog_frame(r, if self.won { "You won!" } else { "Game over" });
+        for (i, (label, value)) in self.rows().iter().enumerate() {
+            let y = r.y + 54.0 + i as f32 * 24.0;
+            text(label, r.x + 24.0, y, INK);
+            text(value, r.x + 124.0, y, INK);
+        }
+        let note = self.note();
+        text(note, r.x + (r.w - text_width(note)) / 2.0, r.y + 152.0, NAVY);
+
+        let held = is_mouse_button_down(MouseButton::Left);
+        let (new_game, close) = (self.new_game_rect(), self.close_rect());
+        button(new_game, "New Game", held && new_game.contains(mouse));
+        button(close, "Close", held && close.contains(mouse));
+    }
+}
+
 // ---------------------------------------------------------------- app
 
 struct App {
@@ -328,7 +576,12 @@ struct App {
     started_at: Option<f64>,
     finished_at: Option<f64>,
     menu_open: bool,
-    dialog: Option<CustomDialog>,
+    dialog: Option<Dialog>,
+    leaderboard: Leaderboard,
+    /// The latest recorded win, highlighted on the leaderboard.
+    last_run: Option<Run>,
+    /// The end-of-game summary and when to show it.
+    pending_summary: Option<(f64, SummaryDialog)>,
     face_down: bool,
     /// Left button went down on the board and hasn't been released yet.
     left_board: bool,
@@ -411,6 +664,9 @@ impl App {
             finished_at: None,
             menu_open: false,
             dialog: None,
+            leaderboard: Leaderboard::load(),
+            last_run: None,
+            pending_summary: None,
             face_down: false,
             left_board: false,
             chording: false,
@@ -424,6 +680,7 @@ impl App {
         self.game = Game::new(self.config, new_seed());
         self.started_at = None;
         self.finished_at = None;
+        self.pending_summary = None;
         self.left_board = false;
         self.chording = false;
         self.swallow = true;
@@ -439,12 +696,53 @@ impl App {
     fn activate(&mut self, item: Item) {
         match item {
             Item::New => self.new_game(),
-            Item::Mode(Mode::Custom) => self.dialog = Some(CustomDialog::new(self.config)),
+            Item::Mode(Mode::Custom) => self.dialog = Some(Dialog::Custom(CustomDialog::new(self.config))),
             Item::Mode(m) => self.set_config(m, m.preset().unwrap()),
             Item::Marks => self.marks = !self.marks,
+            Item::Leaderboard => self.show_leaderboard(self.mode),
             Item::Exit => self.quit = true,
             Item::Separator => {}
         }
+    }
+
+    fn show_leaderboard(&mut self, mode: Mode) {
+        let highlight = self.last_run.filter(|r| r.mode == mode);
+        self.dialog = Some(Dialog::Leaderboard(LeaderboardDialog::new(&self.leaderboard, mode, highlight)));
+    }
+
+    fn perform(&mut self, action: Action) {
+        self.dialog = None;
+        match action {
+            Action::Close => {}
+            Action::Configure(cfg) => self.set_config(Mode::Custom, cfg),
+            Action::NewGame => self.new_game(),
+            Action::ShowLeaderboard(mode) => self.show_leaderboard(mode),
+        }
+    }
+
+    /// Records a finished game and queues its summary.
+    fn finish(&mut self, now: f64) {
+        let start = self.started_at.unwrap_or(now);
+        let millis = ((now - start) * 1000.0).round() as u64;
+        let won = self.game.status() == Status::Won;
+        let (mut placement, mut saved) = (None, true);
+        if won && scores::mode_key(self.mode).is_some() {
+            let when = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let run = Run { mode: self.mode, millis, when };
+            let (p, result) = self.leaderboard.record(run);
+            if let Err(e) = result {
+                eprintln!("minesweeper: couldn't save the leaderboard: {e}");
+                saved = false;
+            }
+            placement = Some(p);
+            self.last_run = Some(run);
+        }
+        let summary =
+            SummaryDialog { mode: self.mode, won, millis, cleared: self.game.cleared(), placement, saved };
+        self.pending_summary = Some((now + SUMMARY_DELAY, summary));
     }
 
     fn elapsed(&self) -> i32 {
@@ -482,14 +780,23 @@ impl App {
         let mouse = mouse();
         self.window.update();
 
+        if self.dialog.is_none()
+            && let Some((at, _)) = self.pending_summary
+            && get_time() >= at
+            && let Some((_, summary)) = self.pending_summary.take()
+        {
+            self.menu_open = false;
+            self.dialog = Some(Dialog::Summary(summary));
+        }
+
         if let Some(dialog) = &mut self.dialog {
-            match dialog.update(mouse) {
-                Some(DialogResult::Ok(cfg)) => {
-                    self.dialog = None;
-                    self.set_config(Mode::Custom, cfg);
-                }
-                Some(DialogResult::Cancel) => self.dialog = None,
-                None => {}
+            let action = match dialog {
+                Dialog::Custom(d) => d.update(mouse),
+                Dialog::Leaderboard(d) => d.update(mouse),
+                Dialog::Summary(d) => d.update(mouse),
+            };
+            if let Some(action) = action {
+                self.perform(action);
             }
             return;
         }
@@ -513,6 +820,7 @@ impl App {
             (KeyCode::Key4, Item::Mode(Mode::Custom)),
             (KeyCode::C, Item::Mode(Mode::Custom)),
             (KeyCode::M, Item::Marks),
+            (KeyCode::L, Item::Leaderboard),
             (KeyCode::Q, Item::Exit),
         ];
         for (key, item) in keys {
@@ -635,6 +943,7 @@ impl App {
             Status::Won | Status::Lost if self.finished_at.is_none() => {
                 self.started_at.get_or_insert(now);
                 self.finished_at = Some(now);
+                self.finish(now);
             }
             _ => {}
         }
@@ -703,8 +1012,11 @@ impl App {
         }
 
         self.draw_menu(mouse, w);
-        if let Some(dialog) = &self.dialog {
-            dialog.draw(mouse);
+        match &self.dialog {
+            Some(Dialog::Custom(d)) => d.draw(mouse),
+            Some(Dialog::Leaderboard(d)) => d.draw(mouse),
+            Some(Dialog::Summary(d)) => d.draw(mouse),
+            None => {}
         }
     }
 

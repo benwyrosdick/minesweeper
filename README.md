@@ -28,13 +28,21 @@ cargo test          # game-rule tests
 | Smiley / F2 / N | New game |
 | 1 / 2 / 3 / 4 (or C) | Beginner / Intermediate / Expert / Custom… |
 | M | Toggle `?` marks |
+| L | Leaderboard (←/→ or 1/2/3 switch difficulty) |
 | Q | Quit |
 
 In the Custom dialog, hold **Shift** to step by 10. Holding a +/− button auto-repeats.
+
+## Leaderboard
+
+Every win on Beginner, Intermediate or Expert is recorded; **Game → Leaderboard...** (or **L**) shows the ten fastest for each. When a game ends, a summary pops up with your time and, for a ranked win, your place among all your wins on that difficulty and its percentile (the share of your other wins it beat). In the summary, Enter starts a new game, Esc closes it and L opens the leaderboard. Custom games and losses aren't ranked.
+
+Times are kept in `~/.local/share/minesweeper/leaderboard.tsv` (`$XDG_DATA_HOME` if set) on Linux and `~/Library/Application Support/Minesweeper/leaderboard.tsv` on macOS.
 
 ## Layout
 
 - `src/game.rs`: rules (mine placement, flood fill, chording, win/loss) and their unit tests
 - `src/draw.rs`: drawing helpers (bevels, pixel-art digits, LED counters, face, mines, flags)
-- `src/main.rs`: window, menu, Custom dialog, input handling
+- `src/scores.rs`: the leaderboard file, ranking and percentiles, and their tests
+- `src/main.rs`: window, menu, Custom/Leaderboard/summary dialogs, input handling
 - `assets/`: logo and icon. The SVGs are the sources; the PNGs are rendered from them, and `icon-16/32/64.png` are built into the binary as the window and Dock icon

@@ -130,6 +130,12 @@ impl Game {
         self.config.mines as i32 - self.flags as i32
     }
 
+    /// Share of the safe cells uncovered so far, 0.0-1.0.
+    pub fn cleared(&self) -> f32 {
+        let safe = self.config.width * self.config.height - self.config.mines;
+        self.revealed as f32 / safe as f32
+    }
+
     pub fn cell(&self, x: usize, y: usize) -> &Cell {
         &self.cells[self.idx(x, y)]
     }
