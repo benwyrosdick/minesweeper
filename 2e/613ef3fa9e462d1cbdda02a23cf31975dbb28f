@@ -1,0 +1,29 @@
+pkgbuild/PKGBUILD
+  s_a9870ed8529462::t_1583e00fad313d 1-26
+.gitignore
+  s_a9870ed8529462::t_1583e00fad313d 2-4
+src/main.rs
+  s_a9870ed8529462::t_c8b37d4296ef76 34-39
+pkgbuild/minesweeper.svg
+  s_a9870ed8529462::t_1583e00fad313d 1
+pkgbuild/minesweeper.desktop
+  s_a9870ed8529462::t_1583e00fad313d 1-9
+bin/install
+  s_a9870ed8529462::t_1583e00fad313d 1-7
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "2e613ef3fa9e462d1cbdda02a23cf31975dbb28f",
+  "prompts": {},
+  "sessions": {
+    "s_a9870ed8529462": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "01a1e49f-42cd-7278-83b3-737524fc549e",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Ben Wyrosdick <ben.wyrosdick@gmail.com>"
+    }
+  }
+}
