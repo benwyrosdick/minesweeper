@@ -1,0 +1,26 @@
+pkgname=minesweeper
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Classic Minesweeper'
+arch=('x86_64' 'aarch64')
+license=('unknown')
+# miniquad loads these with dlopen at startup, so the linker doesn't record them.
+depends=('glibc' 'gcc-libs' 'libx11' 'libxi' 'libglvnd')
+# Built with the cargo on PATH (rustup here), so no makedepends that would pull in
+# Arch's rust package alongside it.
+options=('!debug' '!lto')
+source=()
+sha256sums=()
+
+build() {
+  cd "$startdir/.."
+  cargo build --release --locked
+}
+
+package() {
+  cd "$startdir/.."
+  install -Dm755 target/release/minesweeper "$pkgdir/usr/bin/minesweeper"
+  install -Dm644 assets/NotoSans-OFL.txt "$pkgdir/usr/share/licenses/$pkgname/NotoSans-OFL.txt"
+  install -Dm644 "$startdir/minesweeper.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/minesweeper.svg"
+  install -Dm644 "$startdir/minesweeper.desktop" "$pkgdir/usr/share/applications/minesweeper.desktop"
+}

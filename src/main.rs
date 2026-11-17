@@ -31,6 +31,12 @@ fn window_conf() -> Conf {
         window_resizable: false,
         high_dpi: true,
         icon: app_icon(),
+        // Matches StartupWMClass in pkgbuild/minesweeper.desktop, so the launcher's
+        // icon and name follow the window.
+        platform: miniquad::conf::Platform {
+            linux_wm_class: "minesweeper",
+            ..Default::default()
+        },
         ..Default::default()
     }
 }

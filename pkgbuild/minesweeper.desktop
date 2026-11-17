@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Minesweeper
+Comment=Classic Minesweeper
+Exec=minesweeper
+Icon=minesweeper
+Terminal=false
+Categories=Game;LogicGame;
+StartupWMClass=minesweeper
